@@ -52,7 +52,6 @@ def get_clickstream(table, lang, start, stop, priority = False, min_count = 10):
         wmf.webrequest
     WHERE 
         %(time_conditions)s
-        AND hour = 1
         AND webrequest_source = 'text'
         AND normalized_host.project_class = 'wikipedia'
         AND normalized_host.project = '%(lang)s'
