@@ -9,8 +9,8 @@ Usage:
 
 python get_clickstream.py \
     --start 2016-04-01 \
-    --stop  2016-04-01 \
-    --table test \
+    --stop  2016-04-30 \
+    --table 2016_04_en \
     --lang en \
     --priority
 
