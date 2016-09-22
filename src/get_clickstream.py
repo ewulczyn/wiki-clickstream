@@ -8,9 +8,9 @@ from sqoop_utils import sqoop_prod_dbs
 Usage:
 
 python get_clickstream.py \
-    --start 2016-04-01 \
-    --stop  2016-04-30 \
-    --table 2016_04_en \
+    --start 2016-09-01 \
+    --stop  2016-09-01 \
+    --table test_en \
     --lang en \
     --priority
 
@@ -26,9 +26,102 @@ def get_clickstream(table, lang, start, stop, priority = False, min_count = 10):
 
     query = """
 
+    -- ############################################
+
+    -- series of helper tables to simplify process of restricting 
+    -- to main namespace, resolving redirects and annotating link types
+
+
+    -- page table
+    -- only contains main name space pages (redirects or articles)
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_page_helper;
+    CREATE TABLE clickstream.%(table)s_page_helper AS
+    SELECT
+        page_title
+    FROM
+        clickstream.%(lang)s_page
+    WHERE
+        page_namespace = 0
+    ;
+
+
+
+
+    -- article table
+    -- only contains main name space articles ( no redirects )
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_article_helper;
+    CREATE TABLE clickstream.%(table)s_article_helper AS
+    SELECT
+        page_title
+    FROM
+        clickstream.%(lang)s_page
+    WHERE
+        page_namespace = 0
+        AND page_is_redirect = false
+    ;
+
+
+
+    -- redirect table
+    -- only contains redirects between a main ns pages
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_redirect_helper;
+    CREATE TABLE clickstream.%(table)s_redirect_helper AS
+    SELECT
+        rd_from_page_title,
+        rd_to_page_title
+    FROM
+        clickstream.%(lang)s_redirect 
+    WHERE
+        rd_from_page_namespace = 0
+        AND rd_to_page_namespace = 0
+    ;
+
+
+
+    -- pagelinks table
+    -- contains links between main namespace articles
+    -- the page linked from is always an article
+    -- if the page linked to is a redirect, it is resolved using redirect_helper
+
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_pagelinks_helper;
+    CREATE TABLE clickstream.%(table)s_pagelinks_helper AS
+    SELECT
+        pl_from_page_title,
+        pl_to_page_title
+    FROM
+        (SELECT
+            pl_from_page_title,
+            CASE
+                WHEN r.rd_to_page_title IS NULL THEN pl_to_page_title
+                ELSE rd_to_page_title
+            END AS pl_to_page_title
+        FROM
+            clickstream.%(lang)s_pagelinks l
+        LEFT JOIN
+            clickstream.%(table)s_redirect_helper r ON (r.rd_from_page_title = l.pl_to_page_title)
+        WHERE
+            pl_from_page_is_redirect = false
+            AND pl_from_page_namespace = 0
+            AND pl_to_page_namespace = 0
+        ) a
+    GROUP BY
+        pl_from_page_title,
+        pl_to_page_title
+    ;
+
+    -- ############################################
+
+
+
+
     -- extract raw prev, curr pairs
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp1;
-    CREATE VIEW clickstream.%(table)s_temp1 AS
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp1;
+    CREATE TABLE clickstream.%(table)s_temp1 AS
     SELECT 
         CASE
             -- empty or malformed referer
@@ -52,93 +145,131 @@ def get_clickstream(table, lang, start, stop, priority = False, min_count = 10):
         wmf.webrequest
     WHERE 
         %(time_conditions)s
+        AND hour = 1
         AND webrequest_source = 'text'
         AND normalized_host.project_class = 'wikipedia'
         AND normalized_host.project = '%(lang)s'
         AND is_pageview 
-        AND agent_type = 'user';
+        AND agent_type = 'user'
+    ;
 
 
-    -- count raw prev, curr pairs
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp2;
-    CREATE VIEW clickstream.%(table)s_temp2 AS
+
+    -- count raw prev, curr pairs, this speeds up later queries
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp2;
+    CREATE TABLE clickstream.%(table)s_temp2 AS
     SELECT
-        curr, prev, COUNT(*) as n
+        prev, curr, COUNT(*) as n
     FROM
         clickstream.%(table)s_temp1
     GROUP BY 
-        curr, prev;
+        prev, curr
+    ;
 
 
-    -- resolve redirects
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp3;
-    CREATE VIEW clickstream.%(table)s_temp3 AS
+
+    -- we enforce that prev is an article and not a redirect: the reader has to be on a real page to click a link or do a search.
+    -- we enforce that curr is a main namespace article or redirect
+    -- the joins accomplish this because, in the logs, the non main namespace pages have the namespace prepended
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp3;
+    CREATE TABLE clickstream.%(table)s_temp3 AS
     SELECT 
-        CASE
-            WHEN prev  in ('other-empty', 'other-internal', 'other-external', 'other-search', 'other-other') THEN prev
-            WHEN pr.rd_to IS NULL THEN prev
-            ELSE pr.rd_to
-        END AS prev,
-        CASE
-            WHEN cr.rd_to IS NULL THEN curr
-            ELSE cr.rd_to
-        END AS curr,
+        prev,
+        curr,
         n
     FROM
         clickstream.%(table)s_temp2
     LEFT JOIN
-        clickstream.%(lang)s_redirect pr ON (prev = pr.rd_from)
-    LEFT JOIN
-        clickstream.%(lang)s_redirect cr ON (curr = cr.rd_from);
+        clickstream.%(table)s_article_helper a ON (prev = a.page_title)
+    JOIN
+        clickstream.%(table)s_page_helper p ON (curr = p.page_title)
+    WHERE
+        ( a.page_title is NOT NULL
+          OR 
+          prev  in ('other-empty', 'other-internal', 'other-external', 'other-search', 'other-other')
+        )
+    ;
 
-    -- re-aggregate after resolving redirects and filter out pairs that occur infrequently
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp4;
-    CREATE VIEW clickstream.%(table)s_temp4 AS
-    SELECT
-        curr, prev, SUM(n) as n
+
+
+    -- resolve curr redirects, one step
+    -- note that prev cannot be a redirect, so it does not need to be resolved
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp4;
+    CREATE TABLE clickstream.%(table)s_temp4 AS
+    SELECT 
+        prev,
+        CASE
+            WHEN rd_to_page_title IS NULL THEN curr
+            ELSE rd_to_page_title
+        END AS curr,
+        n
     FROM
         clickstream.%(table)s_temp3
-    GROUP BY
-        curr, prev
-    HAVING
-        SUM(n) > %(min_count)s;
+    LEFT JOIN
+        clickstream.%(table)s_redirect_helper ON (curr = rd_from_page_title)
+    ;
 
-    -- only include main namespace articles
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp5;
-    CREATE VIEW clickstream.%(table)s_temp5 AS
+    --  remove any rows where curr is still a redirect 
+    --  this means  curr is the start of a redirect chain of length >= 2
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp5;
+    CREATE TABLE clickstream.%(table)s_temp5 AS
     SELECT 
-        curr, prev, n
+        prev,
+        curr,
+        n
     FROM
         clickstream.%(table)s_temp4
     LEFT JOIN
-        clickstream.%(lang)s_page_raw pp ON (prev = pp.page_title)
-    LEFT JOIN
-        clickstream.%(lang)s_page_raw cp ON (curr = cp.page_title)
+        clickstream.%(table)s_redirect_helper ON (curr = rd_from_page_title)
     WHERE
-        cp.page_title is not NULL
-        AND ( pp.page_title is NOT NULL
-              OR prev  in ('other-empty', 'other-internal', 'other-external', 'other-search', 'other-other')
-            );
+        rd_from_page_title is NULL
+    ;
+
+
+
+
+    -- re-aggregate after resolving redirects and filter out pairs that occur infrequently
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp6;
+    CREATE TABLE clickstream.%(table)s_temp6 AS
+    SELECT
+        prev, curr, SUM(n) as n
+    FROM
+        clickstream.%(table)s_temp5
+    GROUP BY
+        prev, curr
+    HAVING
+        SUM(n) > %(min_count)s
+    ;
+
+
 
     -- annotate link types
-    DROP VIEW IF EXISTS clickstream.%(table)s_temp6;
-    CREATE VIEW clickstream.%(table)s_temp6 AS
+
+    DROP TABLE IF EXISTS clickstream.%(table)s_temp7;
+    CREATE TABLE clickstream.%(table)s_temp7 AS
     SELECT
         prev,
         curr,
         CASE
-            WHEN prev  in ('other-empty', 'other-internal', 'other-external', 'other-search', 'other-other') THEN 'external'
-            WHEN l.pl_from IS NOT NULL AND l.pl_to IS NOT NULL THEN 'link'
+            WHEN prev in ('other-empty', 'other-internal', 'other-external', 'other-search', 'other-other') THEN 'external'
+            WHEN (pl_from_page_title IS NOT NULL AND pl_to_page_title IS NOT NULL) THEN 'link'
             ELSE 'other'
         END AS type,
         n
     FROM
-        clickstream.%(table)s_temp5
+        clickstream.%(table)s_temp6
     LEFT JOIN
-        clickstream.%(lang)s_pagelinks l ON (prev = l.pl_from AND curr = l.pl_to);
+        clickstream.%(table)s_pagelinks_helper ON (prev = pl_from_page_title AND curr = pl_to_page_title)
+    ;
 
 
-    -- create table
+    -- create final table
+    -- remove self loops
+
     DROP TABLE IF EXISTS clickstream.%(table)s;
     CREATE TABLE clickstream.%(table)s
     ROW FORMAT DELIMITED
@@ -147,16 +278,21 @@ def get_clickstream(table, lang, start, stop, priority = False, min_count = 10):
     SELECT
         *
     FROM
-        clickstream.%(table)s_temp6
+        clickstream.%(table)s_temp7
     WHERE 
-        curr != prev;
+        curr != prev
+    ;
 
-    DROP VIEW clickstream.%(table)s_temp1;
-    DROP VIEW clickstream.%(table)s_temp2;
-    DROP VIEW clickstream.%(table)s_temp3;
-    DROP VIEW clickstream.%(table)s_temp4;
-    DROP VIEW clickstream.%(table)s_temp5;
-    DROP VIEW clickstream.%(table)s_temp6;
+    DROP TABLE clickstream.%(table)s_temp1;
+    DROP TABLE clickstream.%(table)s_temp2;
+    DROP TABLE clickstream.%(table)s_temp3;
+    DROP TABLE clickstream.%(table)s_temp4;
+    DROP TABLE clickstream.%(table)s_temp5;
+    DROP TABLE clickstream.%(table)s_temp6
+    DROP TABLE clickstream.%(table)s_page_helper;
+    DROP TABLE clickstream.%(table)s_article_helper;
+    DROP TABLE clickstream.%(table)s_redirect_helper;
+    DROP TABLE clickstream.%(table)s_pagelinks_helper;
     """
 
     print(query % params)
