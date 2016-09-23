@@ -282,7 +282,7 @@ def get_clickstream(table, lang, start, stop, priority = False, min_count = 10):
 
 
 
-    DROP TABLE clickstream.%(table)s_temp1;
+    DROP VIEW clickstream.%(table)s_temp1;
     DROP TABLE clickstream.%(table)s_temp2;
     DROP TABLE clickstream.%(table)s_temp3;
     DROP TABLE clickstream.%(table)s_temp4;
