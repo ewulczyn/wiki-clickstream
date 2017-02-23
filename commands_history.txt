@@ -1,0 +1,244 @@
+python ~/wmf/util/sqoop_utils.py --db clickstream --langs ar,fa,en --tables page,redirect,pagelinks
+
+python get_clickstream.py \
+    --start 2016-04-01 \
+    --stop  2016-04-30 \
+    --table 2016_04_en \
+    --lang en \
+    --priority
+
+python get_clickstream.py \
+    --start 2016-04-01 \
+    --stop  2016-04-30 \
+    --table 2016_04_ar \
+    --lang ar \
+    --priority
+
+python get_clickstream.py \
+    --start 2016-04-01 \
+    --stop  2016-04-30 \
+    --table 2016_04_fa \
+    --lang fa \
+    --priority
+
+
+python get_clickstream.py \
+    --start 2016-08-01 \
+    --stop  2016-08-31 \
+    --table 2016_08_en \
+    --lang en \
+    --priority
+
+
+python get_clickstream.py \
+    --start 2016-09-01 \
+    --stop  2016-09-30 \
+    --table 2016_09_en \
+    --lang en \
+    --priority
+
+python get_clickstream.py \
+    --start 2017-01-01 \
+    --stop  2017-01-31 \
+    --table 2017_01_en \
+    --lang en 
+
+
+
+
+Sanity Checks:
+
+
+select count(*) from en_page_raw; 12415519 41483269
+select count(distinct(page_id)) from en_page_raw; 12415519
+
+select count(*) from en_redirect_raw; 7403622
+select count(distinct(rd_from)) from en_redirect_raw; 7403622
+
+select count(*) from en_redirect; 7294925
+select count(distinct(rd_from)) from en_redirect; 7294925
+
+Test:
+
+SELECT
+    COUNT(*)
+FROM 
+    wmf.webrequest
+WHERE
+    year=2016
+    AND month=2
+    AND day=1
+    AND hour = 1
+    AND webrequest_source = 'text'
+    AND normalized_host.project_class = 'wikipedia'
+    AND normalized_host.project = 'en'
+    AND is_pageview 
+    AND LENGTH(REGEXP_EXTRACT(reflect('java.net.URLDecoder', 'decode', uri_path), '/wiki/(.*)', 1)) > 0
+    AND agent_type = 'user';
+
+12174742
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests
+FROM
+    clickstream.2016_04_ar;
+
+n_pairs n_requests
+27123320    6696035191
+
+n_pairs n_requests
+21777059        6375791557
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests,
+    type
+FROM
+    clickstream.2016_04_en
+GROUP BY
+    type;
+
+n_pairs n_requests  type
+14640150    1585215153  link
+2380426     152567908   other
+10102744    4958252130  external
+
+n_pairs n_requests      type
+12442174        1126970900      link
+591406          37604641        other
+8743479         5211216016      external
+
+SELECT * FROM 
+clickstream.2016_02
+WHERE curr RLIKE 'Talk:';
+
+##################################
+
+Sanity checks for 2016_08_en:
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests
+FROM
+    clickstream.2016_08_en;
+
+24197165    7502925551
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests,
+    type
+FROM
+    clickstream.2016_08_en
+GROUP BY
+    type;
+
+n_pairs n_requests  type
+14255237    1252275529  link
+676316  51135807    other
+9265612 6199514215  external
+
+select * from 2016_08_en where type = 'other' order by n desc limit 10;
+
+SELECT * FROM 
+clickstream.2016_08_en
+WHERE curr RLIKE 'User:';
+
+None
+
+
+##################################
+
+Sanity checks for 2016_09_en:
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests
+FROM
+    clickstream.2016_09_en;
+
+24187538        6844193790
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests,
+    type
+FROM
+    clickstream.2016_09_en
+GROUP BY
+    type;
+
+n_pairs n_requests  type
+13951370        1187620828      link
+608573  42237813        other
+9627595 5614335149      external
+
+select * from 2016_09_en where type = 'other' order by n desc limit 10;
+
+SELECT * FROM 
+clickstream.2016_09_en
+WHERE curr RLIKE 'User:';
+
+None
+
+##################################
+
+Sanity checks for 2017_01_en:
+
+
+ETL Checks:
+
+
+select count(*) from en_page_raw; 41483269
+select count(distinct(page_id)) from en_page_raw; 41483269
+
+select count(*) from en_redirect_raw; 9364638
+select count(distinct(rd_from)) from en_redirect_raw; 9364638
+
+select count(*) from en_redirect; 9364432
+select count(distinct(rd_from)) from en_redirect; 9364432
+
+
+
+Clickstream Checks:
+
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests
+FROM
+    clickstream.2017_01_en;
+
+    n_pairs n_requests
+25755132        8012700871
+
+
+
+SELECT 
+    count(*) n_pairs,
+    SUM(n) n_requests,
+    type
+FROM
+    clickstream.2017_01_en
+GROUP BY
+    type;
+
+n_pairs n_requests      type
+15444330        1445520593      link
+753355  61218844        other
+9557447 6505961434      external
+
+
+
+select * from 2017_01_en where type = 'other' order by n desc limit 10;
+
+SELECT * FROM 
+clickstream.2017_01_en
+WHERE curr RLIKE 'User:';
